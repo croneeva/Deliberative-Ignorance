@@ -5,6 +5,8 @@
 *.rds
 *.Rproj.user
 .Rproj.user
+*.Rproj
+
 
 Ethics/**
 Literature/**
