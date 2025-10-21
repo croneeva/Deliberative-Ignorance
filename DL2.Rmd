@@ -28,7 +28,7 @@ dat <- read_csv("dl2_data_processed.csv")
 Exclude participants with missing DI Ratings.
 ```{r}
 dat_short <- dat %>%
-filter(!is.na(want_to_know_bin))
+  filter(!is.na(want_to_know_bin))
 ```
 
 ## 2.3. Include categories in dat_short
@@ -78,11 +78,11 @@ dat_short <- dat_short %>%
 ## 2.4. Create Wide Format 
 ```{r}
 motive_vars <- c("expectation","valence","arousal", "sadness","anger","fear", 
-                  "jealousy","envy","disgust","regret","feelinggood","relief",
-                  "happiness","complexity","relevance","reliability","relationships",
-                  "conflict","politeness","notlying","unsureresp.","exclusion",
-                  "self.percept.","actiongeneral","actionnow","disadvantage",
-                  "goalinterfer","socialobligat","legalobligat","surprise","fairness")
+                 "jealousy","envy","disgust","regret","feelinggood","relief",
+                 "happiness","complexity","relevance","reliability","relationships",
+                 "conflict","politeness","notlying","unsureresp.","exclusion",
+                 "self.percept.","actiongeneral","actionnow","disadvantage",
+                 "goalinterfer","socialobligat","legalobligat","surprise","fairness")
 
 
 data_wide <- dat_short %>%
@@ -406,9 +406,9 @@ ratings_per_motive_mean <- dat_short %>%
 top3_motives <- dat_short %>%
   dplyr::group_by(Scenario_Content) %>%
   dplyr::summarise(across(all_of(motive_vars),
-                   ~ mean(.x[.x != -99], na.rm = TRUE),  
-                   .names = "avg_{.col}"),
-            .groups = "drop") %>%
+                          ~ mean(.x[.x != -99], na.rm = TRUE),  
+                          .names = "avg_{.col}"),
+                   .groups = "drop") %>%
   pivot_longer(
     cols = starts_with("avg_"),
     names_to = "motive",
@@ -745,6 +745,18 @@ top3_motives_by_age_DI <- dat_short %>%
 top3_motives_by_age_DI
 ```
 
+
+# easy corr
+
+```{r}
+
+dat_cor_sad_ang<-dat_short%>%filter(Scenario_Content=="partner_prev_relationship" & sadness!=-99 & anger !=-99)
+
+cor(
+  dat_cor_sad_ang$sadness,
+  dat_cor_sad_ang$anger
+)
+```
 
 
 
