@@ -28,7 +28,7 @@ dat <- read_csv("dl2_data_processed.csv")
 Exclude participants with missing DI Ratings.
 ```{r}
 dat_short <- dat %>%
-  filter(!is.na(want_to_know_bin))
+filter(!is.na(want_to_know_bin))
 ```
 
 ## 2.3. Include categories in dat_short
@@ -78,18 +78,18 @@ dat_short <- dat_short %>%
 ## 2.4. Create Wide Format 
 ```{r}
 motive_vars <- c("expectation","valence","arousal", "sadness","anger","fear", 
-                 "jealousy","envy","disgust","regret","feelinggood","relief",
-                 "happiness","complexity","relevance","reliability","relationships",
-                 "conflict","politeness","notlying","unsureresp.","exclusion",
-                 "self.percept.","actiongeneral","actionnow","disadvantage",
-                 "goalinterfer","socialobligat","legalobligat","surprise","fairness")
+                  "jealousy","envy","disgust","regret","feelinggood","relief",
+                  "happiness","complexity","relevance","reliability","relationships",
+                  "conflict","politeness","notlying","unsureresp.","exclusion",
+                  "self.percept.","actiongeneral","actionnow","disadvantage",
+                  "goalinterfer","socialobligat","legalobligat","surprise","fairness")
 
 
 data_wide <- dat_short %>%
-  select(ResponseId, Age_group, Scenario_Code, all_of(motive_vars)) %>%
+  select(ResponseId, Age, Age_group, Scenario_Code, all_of(motive_vars)) %>%
   # long -> wide
   pivot_wider(
-    id_cols = c(ResponseId, Age_group), 
+    id_cols = c(ResponseId, Age, Age_group), 
     names_from = Scenario_Code,
     values_from = all_of(motive_vars),
     names_sep = "_"
@@ -113,7 +113,22 @@ data_wide %>%
   dplyr::summarise(count = n())
 ```
 
-## 3.3. Ratings per participant
+## 3.3. Age range 
+```{r}
+range(data_wide$Age, na.rm = TRUE)
+```
+
+```{r}
+hist(data_wide$Age,
+     main = "Age range",
+     xlab = "Age",
+     ylab = "Frequency",
+     col = "skyblue",
+     border = "white")
+```
+
+
+## 3.4. Ratings per participant
 
 ### Number of DI ratings per participant
 ```{r}
@@ -155,7 +170,7 @@ mean(ratings_combined$avg_ratings_per_scenario, na.rm = TRUE)
 ```
 
 
-## 3.4. Number of ratings by scenario and age group
+## 3.5. Number of ratings by scenario and age group
 ```{r}
 dat_short <- dat_short %>%
   mutate(Age_group = ifelse(is.na(Age_group), "unknown", Age_group))
@@ -351,6 +366,38 @@ scenario_age_prop <- dat_short %>%
 scenario_age_prop 
 ```
 
+
+### Plot Differences DI by scenario and age group
+
+```{r}
+scenario_age_long <- scenario_age_prop %>%
+  pivot_longer(cols = c(younger, older),
+               names_to = "Age_group",
+               values_to = "prop_want_to_know") %>%
+  group_by(Scenario_Content) %>%
+  mutate(mean_prop = mean(prop_want_to_know, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(scenario_age_long,
+       aes(x = reorder(Scenario_Content, mean_prop),
+           y = prop_want_to_know,
+           fill = Age_group)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("younger" = "#4CAF50", "older" = "#2196F3"),
+                    labels = c("older", "younger")) +
+  labs(
+    title = "DI ratings by scenario and age group",
+    x = "Scenario",
+    y = "Proportion DI",
+    fill = "Age group"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 13)
+```
+
+
+
+
 ## 5.3. Differences in DI by category -- young vs. old
 positive: more young participants chose “not want to know” 
 ```{r}
@@ -401,14 +448,39 @@ ratings_per_motive_mean <- dat_short %>%
   )
 ```
 
+
+### Plot: Heatmap mean ratings of motives by scenario
+```{r}
+ratings_long <- ratings_per_motive_mean %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "Motive",
+    values_to = "MeanRating"
+  )
+
+
+ggplot(ratings_long, aes(x = Motive, y = Scenario_Content, fill = MeanRating)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Mean Ratings of Motives per Scenario",
+    x = "Motive",
+    y = "Scenario",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
 ## 6.3. Top 3 highest average rated motives by scenario
 ```{r}
 top3_motives <- dat_short %>%
   dplyr::group_by(Scenario_Content) %>%
   dplyr::summarise(across(all_of(motive_vars),
-                          ~ mean(.x[.x != -99], na.rm = TRUE),  
-                          .names = "avg_{.col}"),
-                   .groups = "drop") %>%
+                   ~ mean(.x[.x != -99], na.rm = TRUE),  
+                   .names = "avg_{.col}"),
+            .groups = "drop") %>%
   pivot_longer(
     cols = starts_with("avg_"),
     names_to = "motive",
@@ -454,7 +526,65 @@ top3_motives_table <- dat_short %>%
 knitr::kable(top3_motives_table, digits = 2, caption = "Top 3 Motives (Mean Ratings) per Scenario")
 ```
 
-## 6.4 Top 3 highest average rated motives by category
+### Plot Top 3 Motives by Scenario
+
+```{r}
+ggplot(top3_motives, aes(x = motive, y = Scenario_Content, fill = avg_rating)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Top 3 Motives by Scenario",
+    x = "Motive",
+    y = "Scenario",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 6.4. Mean Ratings of motives by category 
+
+```{r}
+ratings_per_motive_mean_cat <- dat_short %>%
+  dplyr::group_by(Scenario_Category) %>%
+  dplyr::summarise(
+    across(
+      all_of(motive_vars),
+      ~ mean(.x[.x != -99], na.rm = TRUE),
+      .names = "mean_{.col}"
+    ),
+    .groups = "drop"
+  )
+
+ratings_per_motive_mean_cat
+```
+
+### Plot: Heatmap mean ratings of motives by category
+```{r}
+ratings_long_cat <- ratings_per_motive_mean_cat %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "Motive",
+    values_to = "MeanRating"
+  )
+
+
+ggplot(ratings_long_cat, aes(x = Motive, y = Scenario_Category, fill = MeanRating)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Mean Ratings of Motives by Category",
+    x = "Motive",
+    y = "Category",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+## 6.5. Top 3 highest average rated motives by category
 ```{r}
 top3_motives_cat <- dat_short %>%
   dplyr::group_by(Scenario_Category) %>%
@@ -508,6 +638,21 @@ knitr::kable(top3_motives_cat_table, digits = 2, caption = "Top 3 Motives (Mean 
 ```
 
 
+### Plot 
+```{r}
+ggplot(top3_motives_cat, aes(x = motive, y = Scenario_Category, fill = avg_rating)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Top 3 Motives by Category",
+    x = "Motive",
+    y = "Category",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
 
 
 # 7. Ratings of Motives -- young vs. old 
@@ -744,6 +889,7 @@ top3_motives_by_age_DI <- dat_short %>%
 
 top3_motives_by_age_DI
 ```
+
 
 
 # easy corr
