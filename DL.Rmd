@@ -1,5 +1,5 @@
 ---
-title: "Deliberative Ignorance 2"
+title: "Deliberative Ignorance"
 author: "Eva Crone"
 date: "2025-10-21"
 output: html_document
@@ -86,10 +86,10 @@ motive_vars <- c("expectation","valence","arousal", "sadness","anger","fear",
 
 
 data_wide <- dat_short %>%
-  select(ResponseId, Age_group, Scenario_Code, all_of(motive_vars)) %>%
+  select(ResponseId, Age, Age_group, Scenario_Code, all_of(motive_vars)) %>%
   # long -> wide
   pivot_wider(
-    id_cols = c(ResponseId, Age_group), 
+    id_cols = c(ResponseId, Age, Age_group), 
     names_from = Scenario_Code,
     values_from = all_of(motive_vars),
     names_sep = "_"
@@ -113,7 +113,22 @@ data_wide %>%
   dplyr::summarise(count = n())
 ```
 
-## 3.3. Ratings per participant
+## 3.3. Age range 
+```{r}
+range(data_wide$Age, na.rm = TRUE)
+```
+### Plot Age range
+```{r}
+hist(data_wide$Age,
+     main = "Age range",
+     xlab = "Age",
+     ylab = "Frequency",
+     col = "skyblue",
+     border = "white")
+```
+
+
+## 3.4. Ratings per participant
 
 ### Number of DI ratings per participant
 ```{r}
@@ -155,7 +170,7 @@ mean(ratings_combined$avg_ratings_per_scenario, na.rm = TRUE)
 ```
 
 
-## 3.4. Number of ratings by scenario and age group
+## 3.5. Number of ratings by scenario and age group
 ```{r}
 dat_short <- dat_short %>%
   mutate(Age_group = ifelse(is.na(Age_group), "unknown", Age_group))
@@ -206,7 +221,7 @@ di_scenario <- dat_short %>%
 ```{r pressure, echo=FALSE}
 ggplot(di_scenario, aes(x = Scenario_Content, y = n_ratings, fill = factor(want_to_know_bin))) +
   geom_bar(stat = "identity", position = "dodge") +
-  scale_fill_manual(values = c("0" = "skyblue", "1" = "darkorange"),
+  scale_fill_manual(values = c("0" = "skyblue", "1" = "#E69F00"),
                     name = "Want to know?",
                     labels = c("0 = want to know", "1 = do NOT want to know (DI)")) +
   labs(
@@ -243,7 +258,7 @@ di_scenario_full <- di_scenario_full %>%
 ### Plot proportion DI vs. no DI by scenario
 ```{r}
 ggplot(di_scenario_full, aes(x = Scenario_Content, y = prop_1)) +
-  geom_col(fill = "forestgreen") +
+  geom_col(fill = "#E69F00") +
   coord_flip() +
   labs(
     title = "Proportion of DI per Scenario",
@@ -264,7 +279,7 @@ di_category <- dat_short %>%
 ```{r}
 ggplot(di_category, aes(x = Scenario_Category, y = n_ratings, fill = factor(want_to_know_bin))) +
   geom_bar(stat = "identity", position = "dodge") +
-  scale_fill_manual(values = c("0" = "skyblue", "1" = "darkorange"),
+  scale_fill_manual(values = c("0" = "skyblue", "1" = "#E69F00"),
                     name = "Want to know?",
                     labels = c("0 = want to know", "1 = do NOT want to know (DI)")) +
   labs(
@@ -301,7 +316,7 @@ di_category_full <- di_category_full %>%
 ### Plot proportion DI vs. no DI by category
 ```{r}
 ggplot(di_category_full, aes(x = Scenario_Category, y = prop_1)) +
-  geom_col(fill = "forestgreen") +
+  geom_col(fill = "#E69F00") +
   coord_flip() +
   labs(
     title = "Proportion of DI per Category",
@@ -351,6 +366,36 @@ scenario_age_prop <- dat_short %>%
 scenario_age_prop 
 ```
 
+
+### Plot Differences DI by scenario and age group
+
+```{r}
+scenario_age_long <- scenario_age_prop %>%
+  pivot_longer(cols = c(younger, older),
+               names_to = "Age_group",
+               values_to = "prop_want_to_know") %>%
+  group_by(Scenario_Content) %>%
+  mutate(mean_prop = mean(prop_want_to_know, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(scenario_age_long,
+       aes(x = reorder(Scenario_Content, mean_prop),
+           y = prop_want_to_know,
+           fill = Age_group)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("younger" = "#4CAF50", "older" = "#2196F3"),
+                    labels = c("older", "younger")) +
+  labs(
+    title = "DI ratings by scenario and age group",
+    x = "Scenario",
+    y = "Proportion DI",
+    fill = "Age group"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 13)
+```
+
+
 ## 5.3. Differences in DI by category -- young vs. old
 positive: more young participants chose “not want to know” 
 ```{r}
@@ -373,6 +418,36 @@ category_age_prop <- dat_short %>%
 
 category_age_prop
 ```
+
+### Plot Differences DI by category and age group
+
+```{r}
+scenario_age_long_cat <- category_age_prop %>%
+  pivot_longer(cols = c(younger, older),
+               names_to = "Age_group",
+               values_to = "prop_want_to_know") %>%
+  group_by(Scenario_Category) %>%
+  mutate(mean_prop = mean(prop_want_to_know, na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(scenario_age_long_cat,
+       aes(x = reorder(Scenario_Category, mean_prop),
+           y = prop_want_to_know,
+           fill = Age_group)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c("older" = "#4CAF50", "younger" = "#2196F3"),
+                    labels = c("older", "younger")) +
+  labs(
+    title = "DI ratings by category and age group",
+    x = "Category",
+    y = "Response Not want to know (DI)",
+    fill = "Age group"
+  ) +
+  coord_flip() +
+  theme_minimal(base_size = 13)
+```
+
+
 
 
 # 6.Ratings of Motives
@@ -399,6 +474,31 @@ ratings_per_motive_mean <- dat_short %>%
     ),
     .groups = "drop"
   )
+```
+
+
+### Plot: Heatmap mean ratings of motives by scenario
+```{r}
+ratings_long <- ratings_per_motive_mean %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "Motive",
+    values_to = "MeanRating"
+  )
+
+
+ggplot(ratings_long, aes(x = Motive, y = Scenario_Content, fill = MeanRating)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Mean Ratings of Motives per Scenario",
+    x = "Motive",
+    y = "Scenario",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
 ```
 
 ## 6.3. Top 3 highest average rated motives by scenario
@@ -454,7 +554,65 @@ top3_motives_table <- dat_short %>%
 knitr::kable(top3_motives_table, digits = 2, caption = "Top 3 Motives (Mean Ratings) per Scenario")
 ```
 
-## 6.4 Top 3 highest average rated motives by category
+### Plot Top 3 Motives by Scenario
+
+```{r}
+ggplot(top3_motives, aes(x = motive, y = Scenario_Content, fill = avg_rating)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Top 3 Motives by Scenario",
+    x = "Motive",
+    y = "Scenario",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## 6.4. Mean Ratings of motives by category 
+
+```{r}
+ratings_per_motive_mean_cat <- dat_short %>%
+  dplyr::group_by(Scenario_Category) %>%
+  dplyr::summarise(
+    across(
+      all_of(motive_vars),
+      ~ mean(.x[.x != -99], na.rm = TRUE),
+      .names = "mean_{.col}"
+    ),
+    .groups = "drop"
+  )
+
+ratings_per_motive_mean_cat
+```
+
+### Plot: Heatmap mean ratings of motives by category
+```{r}
+ratings_long_cat <- ratings_per_motive_mean_cat %>%
+  pivot_longer(
+    cols = starts_with("mean_"),
+    names_to = "Motive",
+    values_to = "MeanRating"
+  )
+
+
+ggplot(ratings_long_cat, aes(x = Motive, y = Scenario_Category, fill = MeanRating)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Mean Ratings of Motives by Category",
+    x = "Motive",
+    y = "Category",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+
+
+## 6.5. Top 3 highest average rated motives by category
 ```{r}
 top3_motives_cat <- dat_short %>%
   dplyr::group_by(Scenario_Category) %>%
@@ -508,6 +666,22 @@ knitr::kable(top3_motives_cat_table, digits = 2, caption = "Top 3 Motives (Mean 
 ```
 
 
+### Plot Top 3 motives by category
+```{r}
+ggplot(top3_motives_cat, aes(x = motive, y = Scenario_Category, fill = avg_rating)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(
+    title = "Top 3 Motives by Category",
+    x = "Motive",
+    y = "Category",
+    fill = "Mean Rating"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
 
 
 # 7. Ratings of Motives -- young vs. old 
@@ -532,6 +706,26 @@ overall_motives_by_age <- dat_short %>%
 
 overall_motives_by_age
 ```
+
+### Plot Overall motive ratings by age group
+```{r}
+ggplot(overall_motives_by_age, aes(x = reorder(motive, mean_rating), 
+                                   y = mean_rating, 
+                                   fill = Age_group)) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  coord_flip() +
+  scale_fill_manual(values = c("older" = "#4CAF50", "younger" = "#2196F3"),
+                    labels = c("older", "younger")) +
+  labs(
+    title = "Overall Motive Ratings by Age Group",
+    x = "Motive",
+    y = "Average Rating",
+    fill = "Age Group"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+
 
 ## 7.2. Top 3 motives by scenario - young vs. old  
 ```{r}
@@ -558,7 +752,8 @@ top3_motives_by_age <- dat_short %>%
 top3_motives_by_age 
 ```
 
-## 7.3. Top 3 motives by category and age group?  
+
+## 7.3. Top 3 motives by category and age group  
 ```{r}
 top3_motives_by_age_cat <- dat_short %>%
   dplyr::filter(Age_group %in% c("younger", "older")) %>% 
@@ -582,6 +777,25 @@ top3_motives_by_age_cat <- dat_short %>%
 
 top3_motives_by_age_cat
 ```
+
+### Plot Top 3 Motives by category and age group
+```{r}
+ggplot(top3_motives_by_age_cat,
+       aes(x = reorder(motive, avg_rating), y = avg_rating, fill = Age_group)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ Scenario_Category, scales = "free_x", ncol = 5) +
+  coord_flip() +
+  scale_fill_manual(values = c("older" = "#4CAF50", "younger" = "#2196F3"),
+                    labels = c("older", "younger")) +
+  labs(
+    title = "Top 3 Motives by Scenario Category and Age Group",
+    x = "Motive",
+    y = "Mean Rating",
+    fill = "Age Group"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
 
 # 8.Link Decision DI to Motives 
 
@@ -638,6 +852,7 @@ motive_means_di
 
 ### Highest motives and Scenario -- No DI
 Highly rated motives where participants gave response "want to know" 
+
 ```{r}
 motive_means_noDI <- dat_short %>%
   filter(want_to_know_bin == 0) %>%  
@@ -674,17 +889,23 @@ ratings_long_DI <- ratings_per_motive_DI %>%
     motive = sub("^mean_", "", motive),
     want_to_know_bin = factor(
       want_to_know_bin,
-      levels = c(0, 1),
-      labels = c("Want to know", "Not want to know")
+      levels = c(1, 0),
+      labels = c("Not want to know (DI)", "Want to know")
     )
   )
 
 ggplot(ratings_long_DI, aes(x = motive, y = mean_rating, group = want_to_know_bin, color = want_to_know_bin)) +
   geom_line(linewidth = 1) +
   geom_point(size = 2) +
+  scale_color_manual(
+    values = c(
+      "Want to know" = "#56B4E9" ,  
+      "Not want to know (DI)" =    "#E69F00"   
+    )
+  ) +
   theme_minimal(base_size = 12) +
   labs(
-    title = "Average Motive Ratings by 'Want to Know' vs. 'Not Want to Know'",
+    title = "Mean Motive Ratings by DI Response",
     x = "Motive",
     y = "Mean Rating",
     color = "Response"
@@ -693,6 +914,7 @@ ggplot(ratings_long_DI, aes(x = motive, y = mean_rating, group = want_to_know_bi
     axis.text.x = element_text(angle = 45, hjust = 1),
     plot.title = element_text(face = "bold", size = 14)
   )
+
 ```
 
 
@@ -745,6 +967,23 @@ top3_motives_by_age_DI <- dat_short %>%
 top3_motives_by_age_DI
 ```
 
+### Plot Top 3 Motives by age group and DI Response
+```{r}
+ggplot(top3_motives_by_age_DI,
+       aes(x = reorder(motive, avg_rating), y = avg_rating, fill = Age_group)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  facet_wrap(~ want_to_know_bin, scales = "free_x", ncol = 2,
+             labeller = labeller(want_to_know_bin = c(`1` = "Do not want to know (DI)", `0` = "Want to know"))) +
+  scale_fill_manual(values = c("older" = "#4CAF50", "younger" = "#2196F3"),
+                    labels = c("older", "younger")) +
+  labs(
+    title = "Top 3 Motives by Age Group and DI Response",
+    x = "Motive",
+    y = "Average Rating",
+    fill = "Age Group"
+  ) +
+  theme_minimal(base_size = 12)
+```
 
 
 
