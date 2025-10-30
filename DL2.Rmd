@@ -13,6 +13,8 @@ library(tidyr)
 library(ggplot2)
 library(knitr)
 library(reshape2)
+library(purrr)
+library(pheatmap)
 ```
 
 # 1. Introduction
@@ -1292,6 +1294,7 @@ ggplot(mat_long_purchase, aes(x = Var1, y = Var2, fill = r)) +
   ggtitle("Correlation matrix: Altern recent purchase ")
 
 ```
+
 ### strong correlations altern recent purchase
 ```{r}
 strong_corr_purchase <- mat_long_purchase %>%
@@ -1366,6 +1369,7 @@ ggplot(mat_long_relationship, aes(x = Var1, y = Var2, fill = r)) +
   ggtitle("Correlation matrix: Partner Previous Relationship")
 
 ```
+
 ### strong correlations partner previous relationship 
 ```{r}
 strong_corr_relationship <- mat_long_relationship %>%
@@ -1881,7 +1885,7 @@ strong_got_noDI <- mat_long_got_noDI %>%
 ```
 
 
-### altern_recent_purchase DI vs. noDI 
+### altern_recent_purchase DI vs. no DI 
 ```{r}
 mat_purchase_DI <- corr_scenario_DI$cor_matrix[[which(corr_scenario$Scenario_Content == "altern_recent_purchase")]]
 
@@ -1954,8 +1958,9 @@ strong_purchase_noDI <- mat_long_purchase_noDI %>%
 ## 10.4. Correlations between Motives and DI Response by Scenario 
 
 ### Hiv
-```{r}
+Unsicher ob Korrelation zwischen want to know bin und Motivratings sinnvoll ist (unterschiedliche Gruppengröße und )
 
+```{r}
 dat_hiv <- dat_short %>%
   filter(Scenario_Content == "hiv_test")
 
@@ -2020,7 +2025,7 @@ ggplot(cor_DI_kardashian_df, aes(x = reorder(rating, r), y = r, fill = r)) +
   coord_flip() + 
   theme_minimal() +
   labs(
-    title = "Correlation Ratings vs. want_to_know_bin",
+    title = "Correlation Ratings vs. want_to_know_bin - Kardashian",
     x = "Rating",
     y = "r"
   )
@@ -2028,7 +2033,7 @@ ggplot(cor_DI_kardashian_df, aes(x = reorder(rating, r), y = r, fill = r)) +
 ```
 
 
-### Mean for DI and No DI for Motive reliability 
+### Mean for DI and No DI for Motive == reliability 
 Insgesamt wird bei DI das motive reliability geringer gewertet als bei no DI 
 
 ```{r}
@@ -2060,7 +2065,7 @@ dat_hiv <- dat_hiv %>%
 ```
 
 ### Plot HIV Mean of Motive Rating depending on want to know == 1 or 0
-Unsicher ob das sinn macht weil Gruppen unterschiedlich groß
+Unsicher ob das Sinn macht weil Gruppen unterschiedlich groß
 ```{r}
 library(tidyverse)
 
@@ -2102,7 +2107,7 @@ ggplot(dat_hiv_long, aes(x = reorder(motive, mean), y = mean,
 ```
 
 
-### Correlation matrix 
+### Correlation matrix for all scenario between want to know = 1/0 and motive 
 ```{r}
 
 # Funktion, die Korrelation pro Szenario berechnet
@@ -2111,5 +2116,166 @@ cor_matrix <- dat_short %>%
   summarise(across(all_of(motive_vars),
                    ~ cor(.x, want_to_know_bin, use = "pairwise.complete.obs"),
                    .names = "cor_{col}"))
+
+
 ```
+
+
+
+# 11. Cluster-Analysen der Korrelationsstrukturen 
+Gleiche Heatmap wie oben aber kompakter 
+```{r}
+# Liste, die pro Szenario eine Korrelationsmatrix speichert
+cor_list <- dat_short %>%
+  group_by(Scenario_Content) %>%
+  group_map(~ cor(select(.x, all_of(motive_vars)), use = "pairwise.complete.obs"), .keep = TRUE)
+
+# Optional: Namen für die Liste
+names(cor_list) <- unique(dat_short$Scenario_Content)
+```
+
+
+```{r}
+#for schleife für alle szenarien
+for(i in seq_along(cor_list)) {
+  pheatmap(cor_list[[i]], 
+           main = names(cor_list)[i], 
+           cluster_rows = FALSE, 
+           cluster_cols = FALSE,
+           show_rownames = TRUE,
+           show_colnames = TRUE)
+}
+
+```
+
+
+### Motive innerhalb eines Szenarios clustern . Beispiel hiv_test
+```{r}
+library(stats)
+
+
+cor_mat <- cor_list[["hiv_test"]]
+
+# Distanzmatrix: 1 - Korrelation
+dist_motives_hiv <- as.dist(1 - cor_mat)
+
+# Hierarchisches Clustering
+hc_motives_hiv <- hclust(dist_motives_hiv, method = "ward.D2")
+
+# Dendrogramm
+plot(hc_motives_hiv, main = "Motiv-Cluster: HIV Test Scenario")
+
+# k Cluster definieren
+clusters_hiv5 <- cutree(hc_motives_hiv, k = 5)
+clusters_hiv5
+```
+
+
+## Cluster analysis across all scenarios 
+Jede Zeile = ein Szenario, jede Spalte = die Korrelation eines Motivpaars
+```{r}
+# obere Dreiecksmatrix in Vektor umwandeln
+upper_tri_vector <- function(cor_mat){
+  cor_mat[upper.tri(cor_mat)]
+}
+
+# Für alle Szenarien
+cor_vectors <- lapply(cor_list, upper_tri_vector)
+
+# In Matrix umwandeln
+cor_matrix_all <- do.call(rbind, cor_vectors)
+rownames(cor_matrix_all) <- names(cor_list)
+```
+
+### Szenarien clustern mit ähnlicher motivstruktur
+Correlation Patterns sehr unübersichtlich im Plot
+```{r}
+dist_scenarios <- dist(cor_matrix_all, method = "euclidean")
+hc_scenarios <- hclust(dist_scenarios, method = "ward.D2")
+
+# Dendrogramm 
+plot(hc_scenarios, main = "Cluster of Scenarios by Motiv Structure")
+
+clusters_scenarios5 <- cutree(hc_scenarios, k = 5)
+
+
+library(pheatmap)
+pheatmap(cor_matrix_all,
+         cluster_rows = TRUE, 
+         cluster_cols = TRUE,  
+         show_rownames = TRUE,
+         show_colnames = TRUE,
+         main = "Szenario-Motiv Correlation Patterns")
+
+
+```
+
+
+# 12. Explorative Faktorenanalyse
+### 1. Daten vorbereiten 
+```{r}
+library(psych)
+library(GPArotation)
+
+
+
+#  -99 Werte in NA 
+dat_motives <- dat_short %>%
+  select(all_of(motive_vars)) %>%
+  mutate(across(everything(), ~ na_if(.x, -99)))
+
+# Optional: Zeilen mit zu vielen NAs entfernen
+#dat_motives <- na.omit(dat_motives)
+```
+
+### 2. Faktoranzahl bestimmen
+```{r}
+# Korrelation prüfen
+cor_mat <- cor(dat_motives, use = "pairwise.complete.obs")
+
+# Scree-Plot
+fa.parallel(dat_motives, fa = "fa", n.iter = 100, main = "Parallel Analysis for Factor Number")
+
+
+```
+
+### 3. EFA durchführen
+
+```{r}
+efa_result <- fa(dat_motives,
+                 nfactors = 5,      # Anzahl Faktoren aus Parallelanalyse/Scree
+                 rotate = "oblimin", # oder "varimax" für orthogonal
+                 fm = "pa")          # "ml" = Maximum Likelihood, alternative: "pa" = Principal Axis
+
+# Ergebnis anzeigen
+print(efa_result, cutoff = 0.3) # Zeigt nur Ladungen >= 0.3
+
+
+efa_result$loadings #Loading
+efa_result$values #Eigenwerte 
+efa_result$Vaccounted
+```
+
+### Ladungen extrahieren 
+```{r}
+# 1. Loadings aus dem psych::fa Objekt holen
+L <- efa_result$loadings
+
+# 2. In eine "echte" numeric-Matrix umwandeln
+loadings_matrix <- as.matrix(unclass(L))
+
+# 3. DataFrame erstellen
+loadings_df <- as.data.frame(loadings_matrix)
+
+# 4. Faktoren umbenennen (Beispiel)
+colnames(loadings_df) <- c("negative_emotional", "moral_social_norm", 
+                           "goal-directed_action", 
+                           "social_comparison", "positive_affect")
+
+
+loadings_df
+```
+
+
+
 
