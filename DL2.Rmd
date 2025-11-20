@@ -15,6 +15,10 @@ library(knitr)
 library(reshape2)
 library(purrr)
 library(pheatmap)
+library(effsize)
+library(tibble)
+library(psych)
+library(GPArotation)
 ```
 
 # 1. Introduction
@@ -125,7 +129,7 @@ range(data_wide$Age, na.rm = TRUE)
 hist(data_wide$Age,
      main = "Age range",
      xlab = "Age",
-     ylab = "Frequency",
+     ylab = "Number of Participants",
      col = "skyblue",
      border = "white")
 ```
@@ -836,7 +840,7 @@ motive_means_di <- dat_short %>%
     values_to = "mean_rating"
   ) %>%
   mutate(motive = sub("^avg_", "", motive)) %>%
-  arrange(Scenario_Content, desc(mean_rating))
+  arrange(Scenario_Content,desc(mean_rating))
 
 scenario_props <- dat_short %>%
   group_by(Scenario_Content) %>%
@@ -916,12 +920,280 @@ ggplot(ratings_long_DI, aes(x = motive, y = mean_rating, group = want_to_know_bi
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1),
     plot.title = element_text(face = "bold", size = 14)
-  )
+  ) 
 
 ```
 
 
-## 8.2. Top 3 highest average rated motives DI vs. No DI
+### Bar Plot Motives response DI vs. no DI
+
+```{r}
+
+mean_motive_DI <- dat_short %>%
+  group_by(want_to_know_bin) %>%
+  summarise(
+    across(all_of(motive_vars), 
+           list(
+             mean = ~mean(ifelse(.x == -99, NA, .x), na.rm = TRUE),
+             sd   = ~sd(ifelse(.x == -99, NA, .x), na.rm = TRUE)
+           ),
+           .names = "{.col}_{.fn}"),
+    n = n(),
+    .groups = "drop"
+  )
+
+mean_motive_DI
+
+
+# long format 
+mean_motive_DI_long <- mean_motive_DI %>%
+  pivot_longer(
+    cols = -c(want_to_know_bin, n),
+    names_to = c("motive", "stat"),
+    names_sep = "_",
+    values_to = "value"
+  ) %>%
+  filter(stat == "mean") 
+
+# Barplot
+ggplot(mean_motive_DI_long, aes(x = reorder(motive, value), y = value, fill = factor(want_to_know_bin))) +
+  geom_col(position = position_dodge(width = 0.8)) +
+  coord_flip() +
+  scale_fill_manual(values = c("0" = "skyblue", "1" = "#E69F00"), name = "DI Group") +
+  labs(x = "Motive", y = "Mean rating", title = "Mean Ratings per Motive DI vs. no DI") +
+  theme_minimal()
+
+```
+
+
+
+
+
+## 8.2. Motive Ratings by Scenario and DI Response
+
+### for schleife: plot every scenario 
+```{r}
+
+all_scenarios <- unique(dat_short$Scenario_Content)
+
+for (sc in all_scenarios) {
+  
+  cat("\n### Plot for scenario:", sc, "###\n")
+  
+  dat_sc <- dat_short %>%
+    filter(Scenario_Content == sc)
+  
+  # DI: not want to know (1)
+  motive_means_di_all <- dat_sc %>%
+    filter(want_to_know_bin == 1) %>%
+    summarise(across(
+      all_of(motive_vars),
+      ~ mean(.x[.x != -99], na.rm = TRUE),
+      .names = "mean_{.col}"
+    )) %>%
+    pivot_longer(starts_with("mean_"),
+                 names_to = "motive",
+                 values_to = "mean_rating") %>%
+    mutate(
+      motive = sub("^mean_", "", motive),
+      want_to_know_bin = "Not want to know (DI)"
+    )
+  
+  # want to know (0)
+  motive_means_noDI_all <- dat_sc %>%
+    filter(want_to_know_bin == 0) %>%
+    summarise(across(
+      all_of(motive_vars),
+      ~ mean(.x[.x != -99], na.rm = TRUE),
+      .names = "mean_{.col}"
+    )) %>%
+    pivot_longer(starts_with("mean_"),
+                 names_to = "motive",
+                 values_to = "mean_rating") %>%
+    mutate(
+      motive = sub("^mean_", "", motive),
+      want_to_know_bin = "Want to know"
+    )
+  
+  # combine
+  ratings_long_all <- bind_rows(motive_means_di_all, motive_means_noDI_all)
+  
+  # plot
+  print(
+    ggplot(ratings_long_all, aes(motive, mean_rating, color = want_to_know_bin, group = want_to_know_bin)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      scale_color_manual(values = c(
+        "Want to know" = "#56B4E9",
+        "Not want to know (DI)" = "#E69F00"
+      )) +
+      theme_minimal(base_size = 12) +
+      labs(
+        title = paste("Mean Motive Ratings for Scenario:", sc),
+        x = "Motive",
+        y = "Mean Rating",
+        color = "Response"
+      ) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  )
+}
+
+```
+### t test between DI vs no DI Ratings
+
+```{r}
+
+# Alle Szenarien & Motive definieren
+all_scenarios <- unique(dat_short$Scenario_Content)
+all_motives <- motive_vars
+
+# Funktion: Wilcoxon-Test + Cliff's Delta
+run_wilcox_for_motive <- function(data, scenario, motive) {
+  
+  dat_sc <- data %>%
+    filter(Scenario_Content == scenario) %>%
+    filter(.data[[motive]] != -99)
+  
+  # Falls eine Gruppe leer ist → überspringen
+  if (length(unique(dat_sc$want_to_know_bin)) < 2) {
+    return(NULL)
+  }
+  
+  # Gruppen definieren
+  group_noDI <- dat_sc[[motive]][dat_sc$want_to_know_bin == 0]
+  group_DI <- dat_sc[[motive]][dat_sc$want_to_know_bin == 1]
+  
+  # Wilcoxon (Mann-Whitney)
+  w_res <- wilcox.test(group_noDI, group_DI, exact = FALSE, correct = TRUE)
+  
+  # Cliff's Delta
+  delta <- effsize::cliff.delta(group_noDI, group_DI)
+  
+  tibble(
+    scenario = scenario,
+    motive = motive,
+    mean_noDI = mean(group_noDI),
+    mean_DI = mean(group_DI),
+    W = w_res$statistic,
+    p = w_res$p.value,
+    cliffs_delta = delta$estimate
+  )
+}
+
+
+
+# Schleife über Szenarien × Motive
+results_wilcox <- map_dfr(
+  all_scenarios,
+  function(scen) {
+    map_dfr(
+      all_motives,
+      function(mot) {
+        run_wilcox_for_motive(dat_short, scenario = scen, motive = mot)
+      }
+    )
+  }
+)
+
+results_wilcox
+
+
+results_wilcox <- results_wilcox %>%
+  mutate(
+    # Zahlen auf 3 Nachkommastellen runden
+    across(where(is.numeric), ~ round(.x, 3)),
+    # Signifikanz-Sterne
+    signif = case_when(
+      p < 0.001 ~ "***",
+      p < 0.01  ~ "**",
+      p < 0.05  ~ "*",
+      TRUE      ~ ""
+    )
+  )
+results_wilcox
+
+
+```
+### Plots with significance 
+
+```{r}
+
+for (sc in all_scenarios) {
+  
+  cat("\n### Plot for scenario:", sc, "###\n")
+  
+  # Filter Scenario
+  dat_sc <- dat_short %>% filter(Scenario_Content == sc)
+  
+  # Compute means for DI
+  motive_means_di_all <- dat_sc %>%
+    filter(want_to_know_bin == 1) %>%
+    summarise(across(all_of(motive_vars),
+                     ~ mean(.x[.x != -99], na.rm = TRUE),
+                     .names = "mean_{.col}")) %>%
+    pivot_longer(starts_with("mean_"),
+                 names_to = "motive",
+                 values_to = "mean_rating") %>%
+    mutate(
+      motive = sub("^mean_", "", motive),
+      want_to_know_bin = "Not want to know (DI)"
+    )
+  
+  # Compute means for Want to know
+  motive_means_noDI_all <- dat_sc %>%
+    filter(want_to_know_bin == 0) %>%
+    summarise(across(all_of(motive_vars),
+                     ~ mean(.x[.x != -99], na.rm = TRUE),
+                     .names = "mean_{.col}")) %>%
+    pivot_longer(starts_with("mean_"),
+                 names_to = "motive",
+                 values_to = "mean_rating") %>%
+    mutate(
+      motive = sub("^mean_", "", motive),
+      want_to_know_bin = "Want to know"
+    )
+  
+  # Combine to long format
+  ratings_long_all <- bind_rows(motive_means_di_all, motive_means_noDI_all)
+  
+  # --- Merge significance ----
+  ratings_long_all <- ratings_long_all %>%
+    left_join(
+      results_wilcox %>% filter(scenario == sc),
+      by = c("motive" = "motive")
+    )
+  
+  # Sterne oberhalb der Punkte platzieren
+  ratings_long_all <- ratings_long_all %>%
+    mutate(star_y = mean_rating + 0.15)   # etwas über dem Punkt
+  
+  # --- Plot ---
+  print(
+    ggplot(ratings_long_all,
+           aes(x = motive, y = mean_rating,
+               color = want_to_know_bin, group = want_to_know_bin)) +
+      geom_line(linewidth = 1) +
+      geom_point(size = 2) +
+      geom_text(aes(y = star_y, label = signif), color = "black", size = 4) +
+      scale_color_manual(values = c(
+        "Want to know" = "#56B4E9",
+        "Not want to know (DI)" = "#E69F00"
+      )) +
+      theme_minimal(base_size = 12) +
+      labs(
+        title = paste("Mean Motive Ratings (with significance) for:", sc),
+        x = "Motive",
+        y = "Mean Rating",
+        color = "Response"
+      ) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  )
+}
+
+```
+
+
+## 8.3. Top 3 highest average rated motives DI vs. No DI
 ```{r}
 top3_motives_DI <- dat_short %>%
   dplyr::group_by(want_to_know_bin) %>%
@@ -941,6 +1213,22 @@ top3_motives_DI <- dat_short %>%
   ungroup()
 
 top3_motives_DI
+
+ggplot(top3_motives_DI, aes(x = motive, y = avg_rating, fill = factor(want_to_know_bin))) +
+  geom_col(position = position_dodge()) +
+  scale_fill_manual(values = c("0" = "#56B4E9", "1" = "#E69F00"),
+                    labels = c("Want to know", "Do not want to know")) +
+  theme_minimal() +
+  labs(
+    title = "Top 3 Motives by Decision Type",
+    x = "Motive",
+    y = "Mean Rating",
+    fill = "Decision Type"
+  ) +
+  coord_flip() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+
 ```
 
 # 9. Link Decision DI to Motives -- young vs. old
@@ -982,9 +1270,10 @@ ggplot(top3_motives_by_age_DI,
   labs(
     title = "Top 3 Motives by Age Group and DI Response",
     x = "Motive",
-    y = "Average Rating",
+    y = "Mean Rating",
     fill = "Age Group"
   ) +
+  coord_flip() +
   theme_minimal(base_size = 12)
 ```
 
@@ -996,30 +1285,6 @@ ggplot(top3_motives_by_age_DI,
 # 10. Correlation between Ratings 
 
 ## 10.1. Correlation Ratings by Scenario 
-
-### partner_prev_relationship
-```{r}
-dat_cor_expect_val <- dat_short %>% 
-                            filter(Scenario_Content=="partner_prev_relationship" & expectation!=-99 & valence!=-99)
-
-cor(
-  dat_cor_expect_val$expectation,
-  dat_cor_expect_val$valence
-)
-
-
-
-dat_cor_sad_ang<-dat_short%>%filter(Scenario_Content=="partner_prev_relationship" & sadness!=-99 & anger !=-99)
-
-cor(
-  dat_cor_sad_ang$sadness,
-  dat_cor_sad_ang$anger
-)
-```
-
-
-
-### Correlation Matrix by Scenario
 ```{r}
 corr_scenario <- dat_short %>%
   group_by(Scenario_Content) %>%
@@ -1033,428 +1298,61 @@ corr_scenario <- dat_short %>%
     .groups = "drop"
   )
 
-
-corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "partner_prev_relationship")]]
-
 ```
 
 
-### Correlation Matrix hiv_test
 ```{r}
-#correlation matrix for scenario
-mat_hiv <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "hiv_test")]]
-
-#long format
-mat_long_hiv <- melt(mat_hiv, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_hiv, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Hiv Test")
-
-```
-
-### strong correlations hiv test 
-```{r}
-strong_corr_hiv <- mat_long_hiv %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
-
-
-
-### Correlation matrix Genetic Risk Alzheimer 
-```{r}
-#correlation matrix for scenario
-mat_alz <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "gen_risk_alzheimer")]]
-
-#long format
-mat_long_alz <- melt(mat_alz, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_alz, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Genetic Risk Alzheimer")
-
-```
-
-### strong correlations gen risk alzheimer 
-```{r}
-strong_corr_alz <- mat_long_alz %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))                                    
-```
-
-### Correlation matrix  Genetic Risk Huntington   
-
-```{r}
-#correlation matrix for scenario
-mat_hunt_risk <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "gen_risk_huntington")]]
-
-#long format
-mat_long_hunt_risk <- melt(mat_hunt_risk, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_hunt_risk, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Genetic Risk Huntington")
-
-```
-
-### strong correlations gen risk huntington
-```{r}
-strong_corr_hunt_risk <- mat_long_hunt_risk %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
-
-### Correlation matrix Life Expect Huntington
-
-```{r}
-#correlation matrix for scenario
-mat_hunt_life <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "life_expect_huntington")]]
-
-#long format
-mat_long_hunt_life <- melt(mat_hunt_life, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_hunt_life, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Life expectation Huntington")
-
-
-```
-
-### strong correlations life expect huntington
-```{r}
-strong_corr_hunt_life <- mat_long_hunt_life %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-
-### Correlation matrix Ending GoT
-```{r}
-#correlation matrix for scenario
-mat_got <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "ending_GoT")]]
-
-#long format
-mat_long_got <- melt(mat_got, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_got, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Ending GoT")
-
-
-```
-
-### strong correlations ending GoT
-```{r}
-strong_corr_got <- mat_long_got %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-### Correlation matrix Scenario Kardashian Home
-```{r}
-#correlation matrix for scenario
-mat_kardashian <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "Kardashian_home")]]
-
-#long format
-mat_long_kardashian <- melt(mat_kardashian, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_kardashian, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Kardashian Home")
-
-
-```
-
-### strong correlations kardashian
-```{r}
-
-strong_corr_kardashian <- mat_long_kardashian %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-### Correlation matrix Altern recent Purchase 
-
-```{r}
-#correlation matrix for scenario
-mat_purchase <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "altern_recent_purchase")]]
-
-#long format
-mat_long_purchase <- melt(mat_purchase, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_purchase, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Altern recent purchase ")
-
-```
-
-### strong correlations altern recent purchase
-```{r}
-strong_corr_purchase <- mat_long_purchase %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-### Correlation matrix Scenario Friend Sex Life
-```{r}
-#correlation matrix for scenario
-mat_friend_sex <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "friend_sex_life")]]
-
-#long format
-mat_long_friend_sex <- melt(mat_friend_sex, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_friend_sex, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Friend Sex Life")
-
-```
-
-### strong correlations friend sex life 
-```{r}
-strong_corr_friend_sex <- mat_long_friend_sex %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-### Correlation matrix Partner Previous Relationship 
-
-```{r}
-#correlation matrix for scenario
-mat_relationship <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "partner_prev_relationship")]]
-
-#long format
-mat_long_relationship <- melt(mat_relationship, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_relationship, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Partner Previous Relationship")
-
-```
-
-### strong correlations partner previous relationship 
-```{r}
-strong_corr_relationship <- mat_long_relationship %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-
-
-
-### Correlation matrix Scenario Sex of Child 
-
-```{r}
-#correlation matrix for scenario
-mat_child <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "sex_of_child")]]
-
-#long format
-mat_long_child <- melt(mat_child, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_child, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Sex of Child")
-
-```
-
-### strong correlations sex of child
-```{r}
-strong_corr_child <- mat_long_child %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
-
-### Correlation matrix Nutritional deficiencies 
-
-```{r}
-#correlation matrix for scenario
-mat_nutri<- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == "nutritional_deficiencies")]]
-
-#long format
-mat_long_nutri <- melt(mat_nutri, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_nutri, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Nutritional Deficiencies")
-
-```
-
-### strong correlations Nutritional Deficiencies
-```{r}
-strong_corr_nutri <- mat_long_nutri %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
+corr_plots <- list()
+strong_corr_list <- list()
+
+# Szenarien bestimmen
+all_scenarios <- unique(corr_scenario$Scenario_Content)
+
+limits <- c(-1, 1)
+
+# Schleife über alle Szenarien
+for (sc in all_scenarios) {
+  
+  # --- Korrelationsmatrix extrahieren ---
+  mat <- corr_scenario$cor_matrix[[which(corr_scenario$Scenario_Content == sc)]]
+  
+  # In Long-Format bringen
+  mat_long <- reshape2::melt(mat, varnames = c("Var1", "Var2"), value.name = "r")
+  
+  # --- Heatmap erzeugen ---
+  p <- ggplot(mat_long, aes(x = Var1, y = Var2, fill = r)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = round(r, 2)), size = 2) +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                         midpoint = 0, limits = limits) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank()
+    ) +
+    ggtitle(paste("Correlation matrix:", sc))
+  
+  # Plot speichern
+  corr_plots[[sc]] <- p
+  
+  # Plot direkt ausgeben
+  print(p)
+  
+  # --- starke Korrelationen extrahieren ---
+  strong_corr <- mat_long %>%
+    filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
+    filter(!is.na(r)) %>%
+    filter(abs(r) > 0.5) %>%
+    mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
+    arrange(desc(abs(r)))
+  
+  strong_corr_list[[sc]] <- strong_corr
+}
+
+# corr_plots[["hiv_test"]]
+# strong_corr_list[["hiv_test"]]
 ```
 
 
@@ -1462,182 +1360,75 @@ strong_corr_nutri <- mat_long_nutri %>%
 ## 10.2. Correlation Ratings by Category 
 
 ```{r}
-unique(dat_short$Scenario_Category)
+# Limits für die Heatmaps
+limits <- c(-1, 1)
 
-corr_category <- dat_short %>%
-  group_by(Scenario_Category) %>%
-  summarise(
-    cor_matrix = list(
-      {
-        temp <- across(all_of(motive_vars), ~ ifelse(.x == -99, NA, .x))
-        cor(as.data.frame(temp), use = "pairwise.complete.obs")
-      }
-    ),
-    .groups = "drop"
-  )
-```
+# Listen zum Speichern
+corr_category_plots <- list()
+strong_corr_category <- list()
 
+# Alle Kategorien
+all_categories <- unique(dat_short$Scenario_Category)
 
-### Correlation Matrix Health 
+# Schleife über alle Kategorien
+for (cat in all_categories) {
+  
+  # --- Daten filtern ---
+  df_cat <- dat_short %>%
+    filter(Scenario_Category == cat) %>%
+    select(all_of(motive_vars))
+  
+  # -99 → NA
+  df_cat[df_cat == -99] <- NA
+  
+  # --- Korrelationsmatrix ---
+  cor_mat <- cor(df_cat, use = "pairwise.complete.obs")
+  
+  # --- In Long-Format bringen ---
+  mat_long <- melt(cor_mat, varnames = c("Var1", "Var2"), value.name = "r")
+  
+  # --- Heatmap erzeugen ---
+  p <- ggplot(mat_long, aes(x = Var1, y = Var2, fill = r)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = ifelse(is.na(r), "", round(r, 2))), size = 2) +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                         midpoint = 0, limits = limits) +
+    coord_fixed() +  # quadratische Tiles
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 10),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank()
+    ) +
+    ggtitle(paste("Correlation matrix:", cat))
+  
+  # Plot speichern
+  corr_category_plots[[cat]] <- p
+  
+  # Plot direkt ausgeben
+  print(p)
+  
+  # --- starke Korrelationen extrahieren ---
+  strong_corr <- mat_long %>%
+    filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
+    filter(!is.na(r)) %>%
+    filter(abs(r) > 0.5) %>%
+    mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
+    arrange(desc(abs(r)))
+  
+  strong_corr_category[[cat]] <- strong_corr
+}
 
-```{r}
-#correlation matrix for category
+# corr_category_plots[["Environment"]]
+# strong_corr_category[["Environment"]]
 
-mat_health <- corr_category$cor_matrix[[which(corr_category$Scenario_Category == "Health")]]
-
-#long format
-mat_long_health <- melt(mat_health, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_health, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Health")
-
-```
-
-### strong correlations health
-```{r}
-strong_corr_health <- mat_long_health %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-
-### Correlation Matrix Entertainment 
-
-```{r}
-#correlation matrix for category
-
-mat_entertainment <- corr_category$cor_matrix[[which(corr_category$Scenario_Category == "Entertainment")]]
-
-#long format
-mat_long_entertainment <- melt(mat_entertainment, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_entertainment, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Entertainment")
 
 ```
 
-### strong correlations Entertainment
-```{r}
-strong_corr_entertainment <- mat_long_entertainment %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
+## 10.3. Correlation Ratings Overall
 
-```
-
-
-### Correlation Matrix Career
-
-```{r}
-#correlation matrix for category
-
-mat_career <- corr_category$cor_matrix[[which(corr_category$Scenario_Category == "Career")]]
-
-#long format
-mat_long_career <- melt(mat_career, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_career, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Career")
-
-```
-
-### strong correlations Career
-```{r}
-strong_corr_career <- mat_long_career %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-
-```
-
-### Correlation Matrix Finances
-
-```{r}
-#correlation matrix for category
-
-mat_finances <- corr_category$cor_matrix[[which(corr_category$Scenario_Category == "Finances")]]
-
-#long format
-mat_long_finances <- melt(mat_finances, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_finances, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: Finances")
-
-```
-
-### strong correlations Finances
-```{r}
-strong_corr_finances <- mat_long_finances %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-                                    
-```
-
-
-## 10.3. Overall correlation matrix across scenarios
 ```{r}
 corr_overall <- dat_short %>%
   summarise(
@@ -1653,12 +1444,13 @@ corr_overall <- dat_short %>%
 corr_overall$cor_matrix[[1]]
 ```
 
-### Heatmap Overall Correlations
+
 ```{r}
 #correlation matrix for category
 
 mat_corr <- corr_overall$cor_matrix[[1]]
 
+corr_overall
 #long format
 mat_long_corr <- melt(mat_corr, varnames = c("Var1", "Var2"), value.name = "r")
 
@@ -1712,9 +1504,10 @@ ggplot(strong_corr, aes(x = Var1, y = Var2, fill = r)) +
   ggtitle("Strong correlations (r > 0.5)")
 
 ```
-## 10.3. Correlation Matrix by Scenario and DI Response 
 
-### corr matrix DI overall 
+## 10.4. Correlation Matrix by Scenario and DI Response 
+
+### Corr matrix DI overall 
 ```{r}
 corr_overall_DI <- dat_short %>%
   filter(want_to_know_bin == 1) %>% 
@@ -1727,23 +1520,8 @@ corr_overall_DI <- dat_short %>%
     ),
     .groups = "drop"
   )
-
 ```
 
-
-### strong corr DI 
-```{r}
-mat_corr_DI <- corr_overall_DI$cor_matrix[[1]]
-
-
-mat_long_corr_DI <- melt(mat_corr_DI, varnames = c("Var1", "Var2"), value.name = "r")
-
-strong_corr_DI <- mat_long_corr_DI %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
 
 ## Correlation Matrix No DI overall 
 ```{r}
@@ -1758,7 +1536,20 @@ corr_overall_noDI <- dat_short %>%
     ),
     .groups = "drop"
   )
+```
 
+### strong corr DI 
+```{r}
+mat_corr_DI <- corr_overall_DI$cor_matrix[[1]]
+
+
+mat_long_corr_DI <- melt(mat_corr_DI, varnames = c("Var1", "Var2"), value.name = "r")
+
+strong_corr_DI <- mat_long_corr_DI %>%
+  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
+  filter(abs(r) > 0.5) %>%
+  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
+  arrange(desc(abs(r)))
 ```
 
 
@@ -1776,459 +1567,284 @@ strong_corr_noDI <- mat_long_corr_noDI %>%
   arrange(desc(abs(r)))
 ```
 
-### Correlation Matrix by Scenario only for DI 
 
+## 10.5. Correlation Matrix by Scenario and DI vs. no DI  
+
+### DI
 ```{r}
-corr_scenario_DI <- dat_short %>%
-  filter(want_to_know_bin == 1) %>%      
-  group_by(Scenario_Content) %>%          
-  summarise(
-    cor_matrix = list(
-      cor(
-        as.data.frame(across(all_of(motive_vars)) %>% 
-                        mutate(across(everything(), ~ ifelse(.x == -99, NA, .x)))),
-        use = "pairwise.complete.obs"
-      )
-    ),
-    .groups = "drop"
+corr_DI <- list()
+strong_DI <- list()
+
+for (sc in all_scenarios) {
+  
+  # filter data 
+  df_sc <- dat_short %>%
+    filter(Scenario_Content == sc,
+           want_to_know_bin == 1)   # DI (Not want to know)
+  
+  # motives
+  df_motives <- df_sc %>%
+    select(all_of(motive_vars))
+  
+  df_motives[df_motives == -99] <- NA
+  
+  # correlation matrix
+  cor_mat <- cor(df_motives, use = "pairwise.complete.obs")
+  corr_DI[[sc]] <- cor_mat
+  
+  # combine for plot 
+  mat_long <- melt(cor_mat, varnames = c("Var1", "Var2"), value.name = "r")
+  
+  # plot heatmap 
+  print(
+    ggplot(mat_long, aes(x = Var1, y = Var2, fill = r)) +
+      geom_tile(color = "white") +
+      geom_text(aes(label = round(r, 2)), size = 2) +
+      scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                           limits = c(-1, 1)) +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+      ) +
+      ggtitle(paste("Correlation matrix:", sc, "-- DI"))
   )
+  
+  # strong correlations
+  strong_DI[[sc]] <- mat_long %>%
+    filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
+    filter(abs(r) > 0.5) %>%
+    mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
+    arrange(desc(abs(r)))
+}
 
-corr_scenario_DI$cor_matrix[[which(corr_scenario$Scenario_Content == "nutritional_deficiencies")]]
+# Zugriff:
+# corr_DI[["hiv_test"]]
+# strong_DI[["hiv_test"]]
+
+
 ```
 
 
-### Ending GoT - DI 
-```{r}
-mat_got_DI <- corr_scenario_DI$cor_matrix[[which(corr_scenario$Scenario_Content == "ending_GoT")]]
-
-
-mat_long_got_DI <- melt(mat_got_DI, varnames = c("Var1", "Var2"), value.name = "r")
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_got_DI, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: ending GoT DI")
-```
-
+### no DI 
 
 ```{r}
-strong_got_DI <- mat_long_got_DI %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
+corr_noDI <- list()
+strong_noDI <- list()
 
-### Correlation Matrix by Scenario only for no DI 
-```{r}
-corr_scenario_noDI <- dat_short %>%
-  filter(want_to_know_bin == 0) %>%      
-  group_by(Scenario_Content) %>%          
-  summarise(
-    cor_matrix = list(
-      cor(
-        as.data.frame(across(all_of(motive_vars)) %>% 
-                        mutate(across(everything(), ~ ifelse(.x == -99, NA, .x)))),
-        use = "pairwise.complete.obs"
-      )
-    ),
-    .groups = "drop"
+for (sc in all_scenarios) {
+  
+  # filter data 
+  df_sc <- dat_short %>%
+    filter(Scenario_Content == sc,
+           want_to_know_bin == 0)   # Want to know
+  
+  df_motives <- df_sc %>%
+    select(all_of(motive_vars))
+  
+  df_motives[df_motives == -99] <- NA
+  
+  # correlation matrix 
+  cor_mat <- cor(df_motives, use = "pairwise.complete.obs")
+  corr_noDI[[sc]] <- cor_mat
+  
+  # combine for plot
+  mat_long <- melt(cor_mat, varnames = c("Var1", "Var2"), value.name = "r")
+  
+  # plot heatmap 
+  print(
+    ggplot(mat_long, aes(x = Var1, y = Var2, fill = r)) +
+      geom_tile(color = "white") +
+      geom_text(aes(label = round(r, 2)), size = 2) +
+      scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                           limits = c(-1, 1)) +
+      theme_minimal() +
+      theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.ticks = element_blank(),
+        axis.title = element_blank(),
+        panel.grid = element_blank()
+      ) +
+      ggtitle(paste("Correlation matrix:", sc, "-- no DI"))
   )
+  
+  # strong correlations
+  strong_noDI[[sc]] <- mat_long %>%
+    filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
+    filter(abs(r) > 0.5) %>%
+    mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
+    arrange(desc(abs(r)))
+}
 
-corr_scenario_noDI$cor_matrix[[which(corr_scenario$Scenario_Content == "nutritional_deficiencies")]]
-```
-
-### DI vs. no DI -- ending got correlations
-```{r}
-mat_got_noDI <- corr_scenario_noDI$cor_matrix[[which(corr_scenario$Scenario_Content == "ending_GoT")]]
-
-
-mat_long_got_noDI <- melt(mat_got_noDI, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_got_noDI, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: ending GoT no DI")
+# Zugriff:
+# corr_noDI[["hiv_test"]]
+# strong_noDI[["hiv_test"]]
 
 ```
 
-
-```{r}
-strong_got_noDI <- mat_long_got_noDI %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
-
-
-### altern_recent_purchase DI vs. no DI 
-```{r}
-mat_purchase_DI <- corr_scenario_DI$cor_matrix[[which(corr_scenario$Scenario_Content == "altern_recent_purchase")]]
-
-
-mat_long_purchase_DI <- melt(mat_purchase_DI, varnames = c("Var1", "Var2"), value.name = "r")
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_purchase_DI, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: altern recent purchase -- DI")
-```
+## 10.6. Correlation between pos. - neg. Motive 
 
 
 ```{r}
-strong_purchase_DI <- mat_long_purchase_DI %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
+motives_of_interest <- c("feelinggood", "valence")
 
-### altern recent purchase -- no DI 
-```{r}
-mat_purchase_noDI <- corr_scenario_noDI$cor_matrix[[which(corr_scenario$Scenario_Content == "altern_recent_purchase")]]
+cor_results <- data.frame(Scenario = character(),
+                          Correlation = numeric(),
+                          stringsAsFactors = FALSE)
 
+for (sc in unique(dat_short$Scenario_Content)) {
+  
+  df_sc <- dat_short %>%
+    filter(Scenario_Content == sc,
+           want_to_know_bin == 1) %>%  # Nur "want to know"
+    select(all_of(motives_of_interest))
+  
+  # -99 als NA behandeln
+  df_sc[df_sc == -99] <- NA
+  
+  # Korrelation berechnen
+  cor_value <- cor(df_sc[[1]], df_sc[[2]], use = "pairwise.complete.obs")
+  
+  # Ergebnis speichern
+  cor_results <- rbind(cor_results, data.frame(Scenario = sc,
+                                               Correlation = cor_value))
+}
 
-mat_long_purchase_noDI <- melt(mat_purchase_noDI, varnames = c("Var1", "Var2"), value.name = "r")
-
-
-limits <- c(-1, 1) 
-
-ggplot(mat_long_purchase_noDI, aes(x = Var1, y = Var2, fill = r)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(r, 2)), size = 3) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
-                       limits = limits) +
-  theme_minimal() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1),
-    axis.ticks = element_blank(),
-    axis.title = element_blank(),
-    panel.grid = element_blank()
-  )+
-  ggtitle("Correlation matrix: altern recent purchase -- no DI")
+cor_results
 
 ```
-
-### strong ratings -- scenario purchase -- no DI 
 ```{r}
-strong_purchase_noDI <- mat_long_purchase_noDI %>%
-  filter(as.numeric(factor(Var1)) < as.numeric(factor(Var2))) %>%
-  filter(abs(r) > 0.5) %>%
-  mutate(direction = ifelse(r > 0, "positive", "negative")) %>%
-  arrange(desc(abs(r)))
-```
 
-
-
-## 10.4. Correlations between Motives and DI Response by Scenario 
-
-### Hiv
-Unsicher ob Korrelation zwischen want to know bin und Motivratings sinnvoll ist (unterschiedliche Gruppengröße und )
-
-```{r}
-dat_hiv <- dat_short %>%
-  filter(Scenario_Content == "hiv_test")
-
-cor_DI_hiv <- sapply(motive_vars, function(x) {
-  cor(dat_hiv[[x]], dat_hiv$want_to_know_bin, use = "pairwise.complete.obs")
-})
-
-cor_DI_hiv
-
-```
-
-### Plot mit Korrelationen . Positive corr = M1 (DI) > M0 (no DI)
-```{r}
-# tibble
-cor_DI_hiv_df <- tibble(
-  rating = names(cor_DI_hiv),
-  r = cor_DI_hiv
-)
-
-# Barplot
-#Punkt-Biserial-Korrelation (Pearson) (metrische und binäre Variable)
-ggplot(cor_DI_hiv_df, aes(x = reorder(rating, r), y = r, fill = r)) +
+ggplot(cor_results, aes(x = Scenario, y = Correlation)) +
   geom_col() +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1, 1)) +
   coord_flip() + 
   theme_minimal() +
-  labs(
-    title = "Correlation Ratings vs. want_to_know_bin - hiv test",
-    x = "Rating",
-    y = "r"
-  )
+  labs(title = "Correlation Feeling Good – Valence -- DI ",
+       x = "Scenario",
+       y = "Correlation")
 
 ```
 
-
-### Kardashian 
-```{r}
-
-dat_kardashian <- dat_short %>%
-  filter(Scenario_Content == "Kardashian_home")
-
-cor_DI_kardashian <- sapply(motive_vars, function(x) {
-  cor(dat_kardashian[[x]], dat_kardashian$want_to_know_bin, use = "pairwise.complete.obs")
-})
-
-cor_DI_kardashian
-
-```
+### Correlation between feeling good and valence for each scenario by DI group
 
 ```{r}
-# In ein tibble umwandeln
-cor_DI_kardashian_df <- tibble(
-  rating = names(cor_DI_kardashian),
-  r = cor_DI_kardashian
+motives_of_interest <- c("feelinggood", "valence")
+
+cor_results <- data.frame(
+  Scenario = character(),
+  Group = character(),      # neue Spalte: 0 = No DI, 1 = DI
+  Correlation = numeric(),
+  stringsAsFactors = FALSE
 )
 
-# Barplot
-#Punkt-Biserial-Korrelation (Pearson) (metrische und binäre Variable)
-ggplot(cor_DI_kardashian_df, aes(x = reorder(rating, r), y = r, fill = r)) +
-  geom_col() +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, limits = c(-1, 1)) +
-  coord_flip() + 
-  theme_minimal() +
-  labs(
-    title = "Correlation Ratings vs. want_to_know_bin - Kardashian",
-    x = "Rating",
-    y = "r"
-  )
+for (sc in unique(dat_short$Scenario_Content)) {
+  for (g in c(0, 1)) {   # beide Gruppen durchlaufen
+    
+    df_sc <- dat_short %>%
+      filter(Scenario_Content == sc,
+             want_to_know_bin == g) %>%
+      select(all_of(motives_of_interest))
+    
+    # -99 als NA behandeln
+    df_sc[df_sc == -99] <- NA
+    
+    # Korrelation berechnen (wenn genügend Daten)
+    if (nrow(df_sc) > 2) {
+      cor_value <- cor(df_sc[[1]], df_sc[[2]], use = "pairwise.complete.obs")
+    } else {
+      cor_value <- NA
+    }
+    
+    # Ergebnis speichern
+    cor_results <- rbind(cor_results,
+                         data.frame(
+                           Scenario = sc,
+                           Group = as.character(g),
+                           Correlation = cor_value
+                         ))
+  }
+}
 
 ```
 
 
-### Mean for DI and No DI for Motive == reliability 
-Insgesamt wird bei DI das motive reliability geringer gewertet als bei no DI 
-
 ```{r}
-dat_short %>%
-  group_by(want_to_know_bin) %>%
-  summarise(
-    mean_reliability = mean(reliability[reliability != -99], na.rm = TRUE),
-    sd_reliability = sd(reliability[reliability != -99], na.rm = TRUE),
-    n = sum(reliability != -99)
-  )
-```
-
-### Mean for Hiv Test splitted by DI vs. no DI by motive
-```{r}
-dat_hiv %>%
-  group_by(want_to_know_bin) %>%
-  summarise(
-    across(all_of(motive_vars), 
-           list(mean = ~mean(.x, na.rm = TRUE),
-                sd = ~sd(.x, na.rm = TRUE)),
-           .names = "{.col}_{.fn}"),
-    n = n()
-  )
-
-dat_hiv <- dat_hiv %>%
-  mutate(across(all_of(motive_vars), ~ ifelse(.x == -99, NA, .x)))
-
-
-```
-
-### Plot HIV Mean of Motive Rating depending on want to know == 1 or 0
-Unsicher ob das Sinn macht weil Gruppen unterschiedlich groß
-```{r}
-library(tidyverse)
-
-dat_hiv_summary <- dat_hiv %>%
-  group_by(want_to_know_bin) %>%
-  summarise(
-    across(all_of(motive_vars),
-           list(mean = ~mean(ifelse(.x == -99, NA, .x), na.rm = TRUE),
-                sd   = ~sd(ifelse(.x == -99, NA, .x), na.rm = TRUE)),
-           .names = "{.col}_{.fn}"),
-    n = n()
-  )
-
-dat_hiv_long <- dat_hiv_summary %>%
-  pivot_longer(
-    cols = -c(want_to_know_bin, n),
-    names_to = c("motive", ".value"),
-    names_sep = "_"
-  )
-
-dat_hiv_long <- dat_hiv_long %>%
-  group_by(motive) %>%
-  mutate(mean_overall = mean(mean, na.rm = TRUE)) %>%
-  ungroup()
-
-
-ggplot(dat_hiv_long, aes(x = reorder(motive, mean), y = mean,
-                         fill = as.factor(want_to_know_bin))) +
-  geom_col(position = "dodge") +
+ggplot(cor_results, aes(x = Scenario,
+                        y = Correlation,
+                        fill = Group)) +
+  geom_col(position = position_dodge()) +
   coord_flip() +
+  scale_fill_manual(values = c("0" = "#56B4E9", "1" = "#E69F00"),
+                    labels = c("0" = "Want to know",
+                               "1" = "Not want to know")) +
   theme_minimal() +
   labs(
-    title = "Scenario Hiv: Mean of motive rating depending on DI vs. no DI",
-    x = "Motive",
-    y = "Mean rating",
-    fill = "Want to know (1 = no)"
+    title = "Correlation Feeling Good – Valence by DI Group",
+    x = "Scenario",
+    y = "Correlation",
+    fill = "Group"
   )
-
 ```
 
-
-### Correlation matrix for all scenario between want to know = 1/0 and motive 
-```{r}
-
-# Funktion, die Korrelation pro Szenario berechnet
-cor_matrix <- dat_short %>%
-  group_by(Scenario_Content) %>%
-  summarise(across(all_of(motive_vars),
-                   ~ cor(.x, want_to_know_bin, use = "pairwise.complete.obs"),
-                   .names = "cor_{col}"))
-
-
-```
-
-
-
-# 11. Cluster-Analysen der Korrelationsstrukturen 
-Gleiche Heatmap wie oben aber kompakter 
-```{r}
-# Liste, die pro Szenario eine Korrelationsmatrix speichert
-cor_list <- dat_short %>%
-  group_by(Scenario_Content) %>%
-  group_map(~ cor(select(.x, all_of(motive_vars)), use = "pairwise.complete.obs"), .keep = TRUE)
-
-# Optional: Namen für die Liste
-names(cor_list) <- unique(dat_short$Scenario_Content)
-```
+# 10.7. Correlations between Motives and DI Response by Scenario 
 
 
 ```{r}
-#for schleife für alle szenarien
-for(i in seq_along(cor_list)) {
-  pheatmap(cor_list[[i]], 
-           main = names(cor_list)[i], 
-           cluster_rows = FALSE, 
-           cluster_cols = FALSE,
-           show_rownames = TRUE,
-           show_colnames = TRUE)
+
+cor_DI_plots <- list()
+
+all_scenarios <- unique(dat_short$Scenario_Content)
+
+# Schleife across all scenarios 
+for (sc in all_scenarios) {
+  
+  # filter data 
+  dat_sc <- dat_short %>%
+    filter(Scenario_Content == sc)
+  
+  # calculate correlation  
+  cor_DI <- sapply(motive_vars, function(x) {
+    cor(dat_sc[[x]], dat_sc$want_to_know_bin, use = "pairwise.complete.obs")
+  })
+  
+  # tibble for ggplot
+  cor_DI_df <- tibble(
+    rating = names(cor_DI),
+    r = cor_DI
+  )
+  
+  # create plot
+  p <- ggplot(cor_DI_df, aes(x = reorder(rating, r), y = r, fill = r)) +
+    geom_col() +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                         midpoint = 0, limits = c(-1, 1)) +
+    coord_flip() +
+    theme_minimal() +
+    labs(
+      title = paste("Correlation: Ratings vs. want_to_know_bin -", sc),
+      x = "Rating",
+      y = "r"
+    )
+  
+  # save plot 
+  cor_DI_plots[[sc]] <- p
+  
+  print(p)
 }
-
 ```
 
-
-### Motive innerhalb eines Szenarios clustern . Beispiel hiv_test
+# 12. Explorative Factor Analysis
+### 1. preprocess data 
 ```{r}
-library(stats)
-
-
-cor_mat <- cor_list[["hiv_test"]]
-
-# Distanzmatrix: 1 - Korrelation
-dist_motives_hiv <- as.dist(1 - cor_mat)
-
-# Hierarchisches Clustering
-hc_motives_hiv <- hclust(dist_motives_hiv, method = "ward.D2")
-
-# Dendrogramm
-plot(hc_motives_hiv, main = "Motiv-Cluster: HIV Test Scenario")
-
-# k Cluster definieren
-clusters_hiv5 <- cutree(hc_motives_hiv, k = 5)
-clusters_hiv5
-```
-
-
-## Cluster analysis across all scenarios 
-Jede Zeile = ein Szenario, jede Spalte = die Korrelation eines Motivpaars
-```{r}
-# obere Dreiecksmatrix in Vektor umwandeln
-upper_tri_vector <- function(cor_mat){
-  cor_mat[upper.tri(cor_mat)]
-}
-
-# Für alle Szenarien
-cor_vectors <- lapply(cor_list, upper_tri_vector)
-
-# In Matrix umwandeln
-cor_matrix_all <- do.call(rbind, cor_vectors)
-rownames(cor_matrix_all) <- names(cor_list)
-```
-
-### Szenarien clustern mit ähnlicher motivstruktur
-Correlation Patterns sehr unübersichtlich im Plot
-```{r}
-dist_scenarios <- dist(cor_matrix_all, method = "euclidean")
-hc_scenarios <- hclust(dist_scenarios, method = "ward.D2")
-
-# Dendrogramm 
-plot(hc_scenarios, main = "Cluster of Scenarios by Motiv Structure")
-
-clusters_scenarios5 <- cutree(hc_scenarios, k = 5)
-
-
-library(pheatmap)
-pheatmap(cor_matrix_all,
-         cluster_rows = TRUE, 
-         cluster_cols = TRUE,  
-         show_rownames = TRUE,
-         show_colnames = TRUE,
-         main = "Szenario-Motiv Correlation Patterns")
-
-
-```
-
-
-# 12. Explorative Faktorenanalyse
-### 1. Daten vorbereiten 
-```{r}
-library(psych)
-library(GPArotation)
-
-
-
-#  -99 Werte in NA 
 dat_motives <- dat_short %>%
   select(all_of(motive_vars)) %>%
   mutate(across(everything(), ~ na_if(.x, -99)))
 
-# Optional: Zeilen mit zu vielen NAs entfernen
-#dat_motives <- na.omit(dat_motives)
 ```
 
-### 2. Faktoranzahl bestimmen
+### 2. Parallel Analysis for Factor Number
 ```{r}
 # Korrelation prüfen
 cor_mat <- cor(dat_motives, use = "pairwise.complete.obs")
@@ -2236,10 +1852,9 @@ cor_mat <- cor(dat_motives, use = "pairwise.complete.obs")
 # Scree-Plot
 fa.parallel(dat_motives, fa = "fa", n.iter = 100, main = "Parallel Analysis for Factor Number")
 
-
 ```
 
-### 3. EFA durchführen
+### 3. EFA 
 
 ```{r}
 efa_result <- fa(dat_motives,
