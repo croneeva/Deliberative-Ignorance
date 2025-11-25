@@ -972,7 +972,7 @@ ggplot(mean_motive_DI_long, aes(x = reorder(motive, value), y = value, fill = fa
 ## 8.2. Motive Ratings by Scenario and DI Response
 
 ### for schleife: plot every scenario 
-```{r}
+```{r, fig.show='hide'}
 
 all_scenarios <- unique(dat_short$Scenario_Content)
 
@@ -1301,7 +1301,7 @@ corr_scenario <- dat_short %>%
 ```
 
 
-```{r}
+```{r, fig.show='hide'}
 corr_plots <- list()
 strong_corr_list <- list()
 
@@ -1359,7 +1359,7 @@ for (sc in all_scenarios) {
 
 ## 10.2. Correlation Ratings by Category 
 
-```{r}
+```{r, fig.show='hide'}
 # Limits für die Heatmaps
 limits <- c(-1, 1)
 
@@ -1441,7 +1441,6 @@ corr_overall <- dat_short %>%
     .groups = "drop"
   )
 
-corr_overall$cor_matrix[[1]]
 ```
 
 
@@ -1715,32 +1714,20 @@ for (sc in unique(dat_short$Scenario_Content)) {
 cor_results
 
 ```
-```{r}
 
-ggplot(cor_results, aes(x = Scenario, y = Correlation)) +
-  geom_col() +
-  coord_flip() + 
-  theme_minimal() +
-  labs(title = "Correlation Feeling Good – Valence -- DI ",
-       x = "Scenario",
-       y = "Correlation")
-
-```
 
 ### Correlation between feeling good and valence for each scenario by DI group
 
 ```{r}
-motives_of_interest <- c("feelinggood", "valence")
-
 cor_results <- data.frame(
   Scenario = character(),
-  Group = character(),      # neue Spalte: 0 = No DI, 1 = DI
+  Group = character(),     
   Correlation = numeric(),
   stringsAsFactors = FALSE
 )
 
 for (sc in unique(dat_short$Scenario_Content)) {
-  for (g in c(0, 1)) {   # beide Gruppen durchlaufen
+  for (g in c(0, 1)) {   
     
     df_sc <- dat_short %>%
       filter(Scenario_Content == sc,
